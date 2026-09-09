@@ -1,0 +1,28 @@
+{
+  "name": "codex-session-shelf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local-first session shelf injected into the Codex desktop sidebar through CDP.",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4173",
+    "build": "tsc --noEmit && vite build",
+    "inject": "node scripts/inject.mjs --watch --port 9231",
+    "codex": "node scripts/inject.mjs --launch --watch --open --port 9231",
+    "check": "npm run build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest",
+    "ws": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/ws": "latest",
+    "typescript": "latest"
+  }
+}
