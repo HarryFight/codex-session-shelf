@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codex Session Shelf",
+  "version": "0.1.0",
+  "identifier": "com.harryfight.codex-session-shelf",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": []
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns"],
+    "category": "Productivity",
+    "shortDescription": "在 Codex 客户端中管理长期会话",
+    "externalBin": ["binaries/node"],
+    "resources": {
+      "resources/": ""
+    },
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "hardenedRuntime": true
+    }
+  }
+}

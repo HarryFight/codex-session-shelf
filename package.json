@@ -4,25 +4,34 @@
   "private": true,
   "type": "module",
   "description": "A local-first session shelf injected into the Codex desktop sidebar through CDP.",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4173",
+    "dev:server": "node server/index.mjs --port 4174 --token dev",
     "build": "tsc --noEmit && vite build",
-    "inject": "node scripts/inject.mjs --watch --port 9231",
-    "codex": "node scripts/inject.mjs --launch --watch --open --port 9231",
-    "check": "npm run build"
+    "app:prepare": "npm run build && node scripts/prepare-tauri-app.mjs",
+    "app:dev": "npm run app:prepare && tauri dev",
+    "app:build": "npm run app:prepare && tauri build --bundles app,dmg --config src-tauri/tauri.local.conf.json",
+    "app:build:release": "npm run app:prepare && tauri build --bundles app,dmg",
+    "start": "node server/index.mjs --port 47824",
+    "inject": "npm run build && node scripts/inject.mjs --watch --port 9231 --service-port 47824",
+    "codex": "npm run build && node scripts/inject.mjs --launch --watch --open --port 9231 --service-port 47824",
+    "test": "node --test",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest",
-    "ws": "latest"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "@types/ws": "latest",
     "typescript": "latest"
   }
 }
