@@ -26,6 +26,7 @@ function normalizeCategory(value) {
 function normalizeSession(value = {}) {
   return {
     title: text(value.title),
+    pinned: value.pinned === true,
     favorite: value.favorite === true,
     lifecycle: lifecycleValues.has(value.lifecycle) ? value.lifecycle : null,
     summary: text(value.summary),
@@ -68,6 +69,7 @@ export class SessionShelfDatabase {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
+        pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
         favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
         lifecycle TEXT CHECK (lifecycle IS NULL OR lifecycle IN ('active', 'long_term', 'follow_up', 'closed')),
         summary TEXT NOT NULL DEFAULT '',
@@ -94,6 +96,15 @@ export class SessionShelfDatabase {
       INSERT OR IGNORE INTO app_state (id, revision) VALUES (1, 0);
       INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, datetime('now'));
+    `);
+
+    const columns = new Set(this.database.prepare('PRAGMA table_info(sessions)').all().map((column) => column.name));
+    if (!columns.has('pinned')) this.database.exec('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));');
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS sessions_pinned_updated
+        ON sessions(pinned, updated_at DESC);
+      INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (2, datetime('now'));
     `);
   }
 
@@ -137,10 +148,11 @@ export class SessionShelfDatabase {
     }
     const sessions = {};
     for (const row of this.database.prepare(`
-      SELECT id, title, favorite, lifecycle, summary, next_action, tags FROM sessions ORDER BY updated_at, id
+      SELECT id, title, pinned, favorite, lifecycle, summary, next_action, tags FROM sessions ORDER BY updated_at, id
     `).all()) {
       sessions[row.id] = {
         title: row.title || undefined,
+        pinned: row.pinned === 1,
         favorite: row.favorite === 1,
         categoryIds: categoryIdsBySession.get(row.id) || [],
         lifecycle: row.lifecycle,
@@ -217,10 +229,11 @@ export class SessionShelfDatabase {
 
   #upsertSession(id, session, timestamp) {
     this.database.prepare(`
-      INSERT INTO sessions (id, title, favorite, lifecycle, summary, next_action, tags, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, title, pinned, favorite, lifecycle, summary, next_action, tags, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
+        pinned = excluded.pinned,
         favorite = excluded.favorite,
         lifecycle = excluded.lifecycle,
         summary = excluded.summary,
@@ -230,6 +243,7 @@ export class SessionShelfDatabase {
     `).run(
       id,
       session.title,
+      session.pinned ? 1 : 0,
       session.favorite ? 1 : 0,
       session.lifecycle,
       session.summary,

@@ -3,8 +3,8 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 type Lifecycle = 'active' | 'long_term' | 'follow_up' | 'closed' | null;
-type NativeSession = { id: string; title: string; updatedAt?: number };
-type ManagedSession = { title?: string; favorite: boolean; categoryIds: string[]; lifecycle: Lifecycle; summary: string; nextAction: string; tags: string[] };
+type NativeSession = { id: string; title: string; nativePinned?: boolean; updatedAt?: number };
+type ManagedSession = { title?: string; pinned: boolean; favorite: boolean; categoryIds: string[]; lifecycle: Lifecycle; summary: string; nextAction: string; tags: string[] };
 type Category = { id: string; name: string; color: string };
 type Store = { revision: number; categories: Category[]; sessions: Record<string, ManagedSession> };
 type Theme = 'light' | 'dark';
@@ -13,7 +13,7 @@ const STORAGE_KEY = 'codex-session-shelf:v1';
 const apiUrl = (pathname: string) => new URL(pathname.replace(/^\//, ''), window.location.href).toString();
 const SHARED_STORE_ENDPOINT = apiUrl('api/session-shelf/store');
 const lifecycleLabels: Record<Exclude<Lifecycle, null>, string> = { active: '进行中', long_term: '长期维护', follow_up: '待跟进', closed: '已结束' };
-const emptyManaged = (): ManagedSession => ({ favorite: false, categoryIds: [], lifecycle: null, summary: '', nextAction: '', tags: [] });
+const emptyManaged = (): ManagedSession => ({ pinned: false, favorite: false, categoryIds: [], lifecycle: null, summary: '', nextAction: '', tags: [] });
 const preferredTheme = (): Theme => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
 function loadStore(): Store {
@@ -115,17 +115,17 @@ function Shelf() {
   const currentById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
   const managedFavorites = useMemo(() => Object.entries(store.sessions)
     .filter(([, record]) => record.favorite)
-    .map(([id, record]) => ({ id, title: record.title || currentById.get(id)?.title || `会话 ${id.slice(0, 8)}` })), [currentById, store.sessions]);
+    .map(([id, record]): NativeSession => ({ id, title: record.title || currentById.get(id)?.title || `会话 ${id.slice(0, 8)}` })), [currentById, store.sessions]);
   const visible = useMemo(() => {
-    if (view === 'favorites') {
-      return managedFavorites.map((session) => currentById.get(session.id) || session);
-    }
-    return sessions.filter((session) => {
+    const list = view === 'favorites'
+      ? managedFavorites.map((session) => currentById.get(session.id) || session)
+      : sessions.filter((session) => {
       const record = store.sessions[session.id] || emptyManaged();
       const matchesView = view === 'all' || record.lifecycle === view;
       const matchesCategory = !activeCategoryId || record.categoryIds.includes(activeCategoryId);
       return matchesView && matchesCategory;
     });
+    return [...list].sort((left, right) => Number(store.sessions[right.id]?.pinned) - Number(store.sessions[left.id]?.pinned));
   }, [activeCategoryId, currentById, managedFavorites, sessions, store.sessions, view]);
   const selected = visible.find((session) => session.id === selectedId) || null;
   const selectedManagement = selected ? store.sessions[selected.id] || emptyManaged() : null;
@@ -177,7 +177,7 @@ function Shelf() {
     <div className="shelf-layout">
       <section className="shelf-list" aria-label="会话列表">
         <div className="list-heading"><span>{viewLabel}</span><small>{visible.length} 条</small></div>
-        {visible.length ? visible.map((session) => { const management = store.sessions[session.id] || emptyManaged(); return <article className={`session-row ${selectedId === session.id ? 'current' : ''}`} key={session.id} onClick={() => setSelectedId(session.id)}><button className={`star ${management.favorite ? 'on' : ''}`} onClick={(event) => { event.stopPropagation(); updateSession(session.id, { title: session.title, favorite: !management.favorite }); }} title="加入或移出我的收藏">★</button><div><strong>{session.title}</strong><p>{management.nextAction || management.summary || '未添加长期信息'}</p></div><button className="native-open" onClick={(event) => { event.stopPropagation(); openNative(session); }} title="在 Codex 中打开">↗</button></article>; }) : <div className="empty-list">还没有读取到会话。打开左侧原生会话列表后点击刷新。</div>}
+        {visible.length ? visible.map((session) => { const management = store.sessions[session.id] || emptyManaged(); return <article className={`session-row ${selectedId === session.id ? 'current' : ''}`} key={session.id} onClick={() => setSelectedId(session.id)}><button aria-label={management.pinned ? '取消置顶书架会话' : '置顶书架会话'} className={`pin ${management.pinned ? 'on' : ''}`} onClick={(event) => { event.stopPropagation(); updateSession(session.id, { title: session.title, pinned: !management.pinned }); }} title={management.pinned ? '取消置顶书架会话' : '置顶书架会话'}>⌖</button><button aria-label={management.favorite ? '移出我的收藏' : '加入我的收藏'} className={`star ${management.favorite ? 'on' : ''}`} onClick={(event) => { event.stopPropagation(); updateSession(session.id, { title: session.title, favorite: !management.favorite }); }} title={management.favorite ? '移出我的收藏' : '加入我的收藏'}>★</button><div><strong>{session.title}{session.nativePinned ? <span className="native-pinned" title="Codex 原生置顶">原生置顶</span> : null}</strong><p>{management.nextAction || management.summary || '未添加长期信息'}</p></div><button className="native-open" onClick={(event) => { event.stopPropagation(); openNative(session); }} title="在 Codex 中打开">↗</button></article>; }) : <div className="empty-list">还没有读取到会话。打开左侧原生会话列表后点击刷新。</div>}
       </section>
       <aside className="detail-panel">
         {selected && selectedManagement ? <><div className="detail-title"><p className="eyebrow">LONG-TERM CONTEXT</p><h2>{selected.title}</h2></div><label>生命周期<select value={selectedManagement.lifecycle || ''} onChange={(event) => updateSession(selected.id, { lifecycle: (event.target.value || null) as Lifecycle })}><option value="">未设置</option>{Object.entries(lifecycleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>分类<div className="category-pills">{store.categories.map((category) => <button className={selectedManagement.categoryIds.includes(category.id) ? 'chosen' : ''} key={category.id} onClick={() => updateSession(selected.id, { categoryIds: selectedManagement.categoryIds.includes(category.id) ? selectedManagement.categoryIds.filter((id) => id !== category.id) : [...selectedManagement.categoryIds, category.id] })} type="button"><i style={{ background: category.color }} />{category.name}</button>)}</div></label><label>摘要<textarea onChange={(event) => updateSession(selected.id, { summary: event.target.value })} placeholder="这次会话要长期记住什么？" value={selectedManagement.summary} /></label><label>下一步<input onChange={(event) => updateSession(selected.id, { nextAction: event.target.value })} placeholder="下次打开先做什么" value={selectedManagement.nextAction} /></label><label>标签<input onChange={(event) => updateSession(selected.id, { tags: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} placeholder="用逗号分隔" value={selectedManagement.tags.join(', ')} /></label></> : <div className="detail-placeholder"><span>⌁</span><h2>挑选一段会话</h2><p>在这里保存长期背景、下一步和分类。</p></div>}

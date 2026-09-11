@@ -44,6 +44,7 @@
 
   const textOf = (node) => (node?.textContent || node?.getAttribute?.('aria-label') || '').replace(/\s+/gu, ' ').trim();
   const isEntry = (node) => node?.id === ENTRY_ID || node?.getAttribute?.('data-codex-session-shelf-owned') === 'true';
+  const isNativePinned = (node) => /^(pinned|置顶)$/iu.test(textOf(node?.closest?.('[data-app-action-sidebar-section]')?.querySelector?.('[data-app-action-sidebar-section-heading]')));
 
   function findPluginReference() {
     const candidates = [...document.querySelectorAll('aside nav button, aside nav a, [data-app-action-sidebar-scroll] button')];
@@ -63,7 +64,7 @@
     for (const row of nativeRows) {
       const id = String(row.getAttribute('data-app-action-sidebar-thread-id') || '').replace(/^(?:local|cloud):/iu, '');
       const title = row.getAttribute('data-app-action-sidebar-thread-title') || row.getAttribute('aria-label') || textOf(row);
-      if (id && title && !seen.has(id)) { seen.add(id); result.push({ id, title }); }
+      if (id && title && !seen.has(id)) { seen.add(id); result.push({ id, title, nativePinned: isNativePinned(row) }); }
     }
     if (result.length) return result.slice(0, 500);
     const nodes = [...document.querySelectorAll('[data-app-action-sidebar-scroll] a, [data-app-action-sidebar-scroll] button, aside nav a, aside nav button')];
@@ -74,7 +75,7 @@
       if (!title || !id || nativeLabels.has(title.toLowerCase()) || seen.has(id)) continue;
       if (node.closest('[data-app-action-sidebar-section]')?.querySelector('[data-app-action-sidebar-section-heading]')?.textContent?.toLowerCase().includes('project')) continue;
       seen.add(id);
-      result.push({ id, title });
+      result.push({ id, title, nativePinned: isNativePinned(node) });
     }
     return result.slice(0, 500);
   }
