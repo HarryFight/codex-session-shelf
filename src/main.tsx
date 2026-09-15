@@ -1,88 +1,57 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import type { Category, DisplayMode, ManagedSession, NativeSession, SessionFilter, Store, Theme, ViewMode } from './types';
+import { emptyFilter, emptyManaged, filterActive, normalizeStore } from './types';
+import { apiUrl, fetchSharedStore, isEmptyStore, loadStore, mergeStores, putSharedStore, saveLocalStore, storesMatch } from './store';
+import { ActivityStrip } from './components/ActivityStrip';
+import { FilterBar } from './components/FilterBar';
+import { SessionRow } from './components/SessionRow';
+import { DetailPanel } from './components/DetailPanel';
+import { BatchBar } from './components/BatchBar';
+import { ColumnsIcon, ListIcon, RefreshIcon, SearchIcon } from './components/Icons';
 
-type Lifecycle = 'active' | 'long_term' | 'follow_up' | 'closed' | null;
-type NativeSession = { id: string; title: string; nativePinned?: boolean; updatedAt?: number };
-type ManagedSession = { title?: string; pinned: boolean; favorite: boolean; categoryIds: string[]; lifecycle: Lifecycle; summary: string; nextAction: string; tags: string[] };
-type Category = { id: string; name: string; color: string };
-type Store = { revision: number; categories: Category[]; sessions: Record<string, ManagedSession> };
-type Theme = 'light' | 'dark';
+const preferredTheme = (): Theme =>
+  window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
-const STORAGE_KEY = 'codex-session-shelf:v1';
-const apiUrl = (pathname: string) => new URL(pathname.replace(/^\//, ''), window.location.href).toString();
-const SHARED_STORE_ENDPOINT = apiUrl('api/session-shelf/store');
-const lifecycleLabels: Record<Exclude<Lifecycle, null>, string> = { active: '进行中', long_term: '长期维护', follow_up: '待跟进', closed: '已结束' };
-const emptyManaged = (): ManagedSession => ({ pinned: false, favorite: false, categoryIds: [], lifecycle: null, summary: '', nextAction: '', tags: [] });
-const preferredTheme = (): Theme => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-
-function loadStore(): Store {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '') as Partial<Store>;
-    return normalizeStore(value);
-  } catch { return normalizeStore(null); }
-}
-
-function normalizeStore(value: Partial<Store> | null | undefined): Store {
-  return { revision: Number.isInteger(value?.revision) ? Number(value?.revision) : 0, categories: Array.isArray(value?.categories) ? value.categories : [], sessions: value?.sessions || {} };
-}
-
-function isEmptyStore(store: Store) {
-  return store.categories.length === 0 && Object.keys(store.sessions).length === 0;
-}
-
-function mergeStores(shared: Store, local: Store): Store {
-  return {
-    revision: shared.revision,
-    categories: [...new Map([...shared.categories, ...local.categories].map((category) => [category.id, category])).values()],
-    sessions: { ...shared.sessions, ...local.sessions },
-  };
-}
-
-function storesMatch(left: Store, right: Store) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function Shelf() {
+function App() {
   const [sessions, setSessions] = useState<NativeSession[]>([]);
   const [store, setStore] = useState<Store>(loadStore);
-  const [view, setView] = useState<'all' | 'favorites' | Lifecycle>('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('favorites');
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('list');
+  const [filter, setFilter] = useState<SessionFilter>(emptyFilter);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(preferredTheme);
-  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [sharedReady, setSharedReady] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const storeRef = useRef(store);
 
-  useEffect(() => { storeRef.current = store; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }, [store]);
+  useEffect(() => { storeRef.current = store; saveLocalStore(store); }, [store]);
+
   useEffect(() => {
     let cancelled = false;
     async function connectSharedStore() {
-      try {
-        const response = await fetch(SHARED_STORE_ENDPOINT);
-        const shared = normalizeStore(await response.json() as Partial<Store>);
-        const next = isEmptyStore(shared) ? mergeStores(shared, storeRef.current) : shared;
-        if (!cancelled && !storesMatch(storeRef.current, next)) setStore(next);
-        if (!storesMatch(shared, next)) await fetch(SHARED_STORE_ENDPOINT, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-      } catch {
-        // Keep the per-window local copy when the local service is unavailable.
-      } finally {
-        if (!cancelled) setSharedReady(true);
-      }
+      const shared = await fetchSharedStore();
+      if (cancelled || !shared) { if (!cancelled) setSharedReady(true); return; }
+      const next = isEmptyStore(shared) ? mergeStores(shared, storeRef.current) : shared;
+      if (!storesMatch(storeRef.current, next)) setStore(next);
+      if (!storesMatch(shared, next)) await putSharedStore(next);
+      if (!cancelled) setSharedReady(true);
     }
     void connectSharedStore();
     return () => { cancelled = true; };
   }, []);
+
   useEffect(() => {
     if (!sharedReady) return;
     const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch(SHARED_STORE_ENDPOINT);
-        const shared = normalizeStore(await response.json() as Partial<Store>);
-        if (!storesMatch(storeRef.current, shared)) setStore(shared);
-      } catch { /* Local fallback remains active. */ }
-    }, 1_500);
+      const shared = await fetchSharedStore();
+      if (shared && !storesMatch(storeRef.current, shared)) setStore(shared);
+    }, 1500);
     return () => window.clearInterval(timer);
   }, [sharedReady]);
+
   useEffect(() => {
     setStore((current) => {
       let changed = false;
@@ -98,13 +67,16 @@ function Shelf() {
       return changed ? { ...current, sessions: nextSessions } : current;
     });
   }, [sessions]);
+
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.data?.type === 'codex-session-shelf:theme' && (event.data.theme === 'light' || event.data.theme === 'dark')) {
         setTheme(event.data.theme);
       }
       if (event.data?.type === 'codex-session-shelf:sessions' && Array.isArray(event.data.sessions)) {
-        setSessions(event.data.sessions.filter((item: unknown): item is NativeSession => Boolean(item && typeof item === 'object' && typeof (item as NativeSession).id === 'string' && typeof (item as NativeSession).title === 'string')));
+        const valid = event.data.sessions.filter((item: unknown): item is NativeSession =>
+          Boolean(item && typeof item === 'object' && typeof (item as NativeSession).id === 'string' && typeof (item as NativeSession).title === 'string'));
+        setSessions(valid);
       }
     };
     window.addEventListener('message', receive);
@@ -112,78 +84,362 @@ function Shelf() {
     return () => window.removeEventListener('message', receive);
   }, []);
 
-  const currentById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
-  const managedFavorites = useMemo(() => Object.entries(store.sessions)
-    .filter(([, record]) => record.favorite)
-    .map(([id, record]): NativeSession => ({ id, title: record.title || currentById.get(id)?.title || `会话 ${id.slice(0, 8)}` })), [currentById, store.sessions]);
+  const currentById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+
+  const favoriteSessions = useMemo(() => {
+    return Object.entries(store.sessions)
+      .filter(([, record]) => record.favorite)
+      .map(([id, record]): NativeSession => ({
+        id,
+        title: record.title || currentById.get(id)?.title || `会话 ${id.slice(0, 8)}`,
+        nativePinned: currentById.get(id)?.nativePinned,
+        updatedAt: record.updatedAt,
+      }));
+  }, [currentById, store.sessions]);
+
+  const baseList = useMemo(() => {
+    if (viewMode === 'favorites') {
+      return favoriteSessions.map((s) => currentById.get(s.id) || s);
+    }
+    return sessions;
+  }, [currentById, favoriteSessions, sessions, viewMode]);
+
+  const availableTags = useMemo(() => {
+    const tagCounts = new Map<string, number>();
+    for (const session of baseList) {
+      const tags = store.sessions[session.id]?.tags || [];
+      for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+    }
+    return [...tagCounts.keys()].sort((a, b) => tagCounts.get(b)! - tagCounts.get(a)!);
+  }, [baseList, store.sessions]);
+
+  const filterCounts = useMemo(() => {
+    const byCategory: Record<string, number> = {};
+    const byTag: Record<string, number> = {};
+    const byLifecycle: Record<string, number> = {};
+    for (const session of baseList) {
+      const managed = store.sessions[session.id] || emptyManaged();
+      for (const categoryId of managed.categoryIds) byCategory[categoryId] = (byCategory[categoryId] || 0) + 1;
+      for (const tag of managed.tags) byTag[tag] = (byTag[tag] || 0) + 1;
+      if (managed.lifecycle) byLifecycle[managed.lifecycle] = (byLifecycle[managed.lifecycle] || 0) + 1;
+    }
+    return { byCategory, byTag, byLifecycle };
+  }, [baseList, store.sessions]);
+
   const visible = useMemo(() => {
-    const list = view === 'favorites'
-      ? managedFavorites.map((session) => currentById.get(session.id) || session)
-      : sessions.filter((session) => {
-      const record = store.sessions[session.id] || emptyManaged();
-      const matchesView = view === 'all' || record.lifecycle === view;
-      const matchesCategory = !activeCategoryId || record.categoryIds.includes(activeCategoryId);
-      return matchesView && matchesCategory;
+    const search = filter.search.trim().toLowerCase();
+    return baseList.filter((session) => {
+      const managed = store.sessions[session.id] || emptyManaged();
+      if (search && !session.title.toLowerCase().includes(search) &&
+          !managed.summary.toLowerCase().includes(search) &&
+          !managed.tags.some((tag) => tag.toLowerCase().includes(search))) return false;
+      if (filter.lifecycle && managed.lifecycle !== filter.lifecycle) return false;
+      if (filter.categoryIds.length > 0 && !filter.categoryIds.some((id) => managed.categoryIds.includes(id))) return false;
+      if (filter.tags.length > 0 && !filter.tags.some((tag) => managed.tags.includes(tag))) return false;
+      return true;
+    }).sort((left, right) => {
+      const leftPinned = store.sessions[left.id]?.pinned ? 1 : 0;
+      const rightPinned = store.sessions[right.id]?.pinned ? 1 : 0;
+      if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+      return (store.sessions[right.id]?.updatedAt || 0) - (store.sessions[left.id]?.updatedAt || 0);
     });
-    return [...list].sort((left, right) => Number(store.sessions[right.id]?.pinned) - Number(store.sessions[left.id]?.pinned));
-  }, [activeCategoryId, currentById, managedFavorites, sessions, store.sessions, view]);
-  const selected = visible.find((session) => session.id === selectedId) || null;
-  const selectedManagement = selected ? store.sessions[selected.id] || emptyManaged() : null;
-  const favoriteCount = managedFavorites.length;
-  const viewLabel = activeCategoryId ? store.categories.find((category) => category.id === activeCategoryId)?.name || '分类' : view === 'all' ? '全部会话' : view === 'favorites' ? '我的收藏' : (view ? lifecycleLabels[view] : '全部会话');
+  }, [baseList, filter, store.sessions]);
+
+  const groupedVisible = useMemo(() => {
+    const groups = new Map<string, { category: Category | null; sessions: NativeSession[] }>();
+    const ungrouped: NativeSession[] = [];
+    for (const session of visible) {
+      const managed = store.sessions[session.id] || emptyManaged();
+      const category = store.categories.find((c) => managed.categoryIds.includes(c.id));
+      if (!category) { ungrouped.push(session); continue; }
+      if (!groups.has(category.id)) groups.set(category.id, { category, sessions: [] });
+      groups.get(category.id)!.sessions.push(session);
+    }
+    return { groups: [...groups.values()], ungrouped };
+  }, [store.categories, store.sessions, visible]);
+
+  const selected = visible.find((s) => s.id === selectedId) ||
+    baseList.find((s) => s.id === selectedId) || null;
+  const selectedManaged = selected ? store.sessions[selected.id] || emptyManaged() : null;
+  const favoriteCount = favoriteSessions.length;
 
   function updateSession(id: string, patch: Partial<ManagedSession>) {
-    setStore((current) => ({ ...current, sessions: { ...current.sessions, [id]: { ...(current.sessions[id] || emptyManaged()), ...patch } } }));
-    void patchSession(id, patch);
+    const timestamp = Date.now();
+    setStore((current) => ({
+      ...current,
+      sessions: {
+        ...current.sessions,
+        [id]: { ...(current.sessions[id] || emptyManaged()), ...patch, updatedAt: timestamp },
+      },
+    }));
+    void patchSession(id, { ...patch, updatedAt: timestamp });
   }
-  async function applyServerStore(response: Response) {
-    if (!response.ok) return;
-    const remote = normalizeStore(await response.json() as Partial<Store>);
-    setStore((current) => remote.revision >= current.revision ? remote : current);
-  }
+
   async function patchSession(id: string, patch: Partial<ManagedSession>) {
     try {
       const response = await fetch(apiUrl(`api/session-shelf/sessions/${encodeURIComponent(id)}`), {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
       });
       await applyServerStore(response);
-    } catch { /* Keep the local fallback until the service is available again. */ }
+    } catch { /* local fallback stays active */ }
   }
+
+  async function applyServerStore(response: Response) {
+    if (!response.ok) return;
+    const remote = normalizeStore(await response.json().catch(() => null) as Partial<Store> | null);
+    setStore((current) => remote.revision >= current.revision && !storesMatch(current, remote) ? remote : current);
+  }
+
   function addCategory() {
     const name = window.prompt('分类名称');
     if (!name?.trim()) return;
-    const category = { id: crypto.randomUUID(), name: name.trim(), color: '#e76f51' };
+    const category: Category = { id: crypto.randomUUID(), name: name.trim(), color: '#6366f1' };
     setStore((current) => ({ ...current, categories: [...current.categories, category] }));
     void fetch(apiUrl('api/session-shelf/categories'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(category),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(category),
     }).then(applyServerStore).catch(() => undefined);
   }
+
   function openNative(session: NativeSession) {
     window.parent.postMessage({ type: 'codex-session-shelf:open-session', sessionId: session.id, title: session.title }, '*');
   }
 
-  return <main className="shelf-shell" data-theme={theme}>
-    <header className="shelf-header"><div><p className="eyebrow">CODEX SESSION SHELF</p><h1>会话书架</h1></div><button className="sync-button" onClick={() => window.parent.postMessage({ type: 'codex-session-shelf:request-sessions' }, '*')} title="刷新会话">↻</button></header>
-    <nav className="shelf-nav" aria-label="会话视图">
-      <div className="nav-group">
-        <button className={!activeCategoryId && view === 'all' ? 'selected' : ''} onClick={() => { setActiveCategoryId(null); setView('all'); }}><span>全部</span><b>{sessions.length}</b></button>
-        <button className={!activeCategoryId && view === 'favorites' ? 'selected' : ''} onClick={() => { setActiveCategoryId(null); setView('favorites'); }}><span>我的收藏</span><b>{favoriteCount}</b></button>
-      </div>
-      <div className="nav-group lifecycle-group">
-        {(Object.keys(lifecycleLabels) as Exclude<Lifecycle, null>[]).map((key) => <button className={!activeCategoryId && view === key ? 'selected' : ''} key={key} onClick={() => { setActiveCategoryId(null); setView(key); }}><span>{lifecycleLabels[key]}</span><b>{sessions.filter((s) => store.sessions[s.id]?.lifecycle === key).length}</b></button>)}
-      </div>
-      <div className="category-group"><span className="nav-label">分类</span><button className="category-add" onClick={addCategory} title="新建分类">＋</button>{store.categories.map((category) => <button className={`category-item ${activeCategoryId === category.id ? 'selected' : ''}`} key={category.id} onClick={() => { setActiveCategoryId(category.id); setView('all'); }}><i style={{ background: category.color }} />{category.name}<b>{sessions.filter((s) => store.sessions[s.id]?.categoryIds.includes(category.id)).length}</b></button>)}</div>
-    </nav>
-    <div className="shelf-layout">
-      <section className="shelf-list" aria-label="会话列表">
-        <div className="list-heading"><span>{viewLabel}</span><small>{visible.length} 条</small></div>
-        {visible.length ? visible.map((session) => { const management = store.sessions[session.id] || emptyManaged(); return <article className={`session-row ${selectedId === session.id ? 'current' : ''}`} key={session.id} onClick={() => setSelectedId(session.id)}><button aria-label={management.pinned ? '取消置顶书架会话' : '置顶书架会话'} className={`pin ${management.pinned ? 'on' : ''}`} onClick={(event) => { event.stopPropagation(); updateSession(session.id, { title: session.title, pinned: !management.pinned }); }} title={management.pinned ? '取消置顶书架会话' : '置顶书架会话'}>⌖</button><button aria-label={management.favorite ? '移出我的收藏' : '加入我的收藏'} className={`star ${management.favorite ? 'on' : ''}`} onClick={(event) => { event.stopPropagation(); updateSession(session.id, { title: session.title, favorite: !management.favorite }); }} title={management.favorite ? '移出我的收藏' : '加入我的收藏'}>★</button><div><strong>{session.title}{session.nativePinned ? <span className="native-pinned" title="Codex 原生置顶">原生置顶</span> : null}</strong><p>{management.nextAction || management.summary || '未添加长期信息'}</p></div><button className="native-open" onClick={(event) => { event.stopPropagation(); openNative(session); }} title="在 Codex 中打开">↗</button></article>; }) : <div className="empty-list">还没有读取到会话。打开左侧原生会话列表后点击刷新。</div>}
-      </section>
-      <aside className="detail-panel">
-        {selected && selectedManagement ? <><div className="detail-title"><p className="eyebrow">LONG-TERM CONTEXT</p><h2>{selected.title}</h2></div><label>生命周期<select value={selectedManagement.lifecycle || ''} onChange={(event) => updateSession(selected.id, { lifecycle: (event.target.value || null) as Lifecycle })}><option value="">未设置</option>{Object.entries(lifecycleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>分类<div className="category-pills">{store.categories.map((category) => <button className={selectedManagement.categoryIds.includes(category.id) ? 'chosen' : ''} key={category.id} onClick={() => updateSession(selected.id, { categoryIds: selectedManagement.categoryIds.includes(category.id) ? selectedManagement.categoryIds.filter((id) => id !== category.id) : [...selectedManagement.categoryIds, category.id] })} type="button"><i style={{ background: category.color }} />{category.name}</button>)}</div></label><label>摘要<textarea onChange={(event) => updateSession(selected.id, { summary: event.target.value })} placeholder="这次会话要长期记住什么？" value={selectedManagement.summary} /></label><label>下一步<input onChange={(event) => updateSession(selected.id, { nextAction: event.target.value })} placeholder="下次打开先做什么" value={selectedManagement.nextAction} /></label><label>标签<input onChange={(event) => updateSession(selected.id, { tags: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} placeholder="用逗号分隔" value={selectedManagement.tags.join(', ')} /></label></> : <div className="detail-placeholder"><span>⌁</span><h2>挑选一段会话</h2><p>在这里保存长期背景、下一步和分类。</p></div>}
-      </aside>
+  function toggleFavorite(session: NativeSession, managed: ManagedSession) {
+    updateSession(session.id, { title: session.title, favorite: !managed.favorite });
+  }
+
+  function togglePin(session: NativeSession, managed: ManagedSession) {
+    updateSession(session.id, { title: session.title, pinned: !managed.pinned });
+  }
+
+  function toggleChecked(id: string) {
+    setCheckedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function batchUpdate(ids: string[], patch: Partial<ManagedSession>) {
+    for (const id of ids) updateSession(id, patch);
+  }
+
+  function batchAddTag() {
+    const input = window.prompt('为选中会话添加标签（逗号分隔）');
+    if (!input?.trim()) return;
+    const tags = input.split(',').map((t) => t.trim()).filter(Boolean);
+    for (const id of checkedIds) {
+      const managed = store.sessions[id] || emptyManaged();
+      const merged = [...new Set([...managed.tags, ...tags])];
+      updateSession(id, { tags: merged });
+    }
+  }
+
+  function batchAddCategory(categoryId: string) {
+    for (const id of checkedIds) {
+      const managed = store.sessions[id] || emptyManaged();
+      if (!managed.categoryIds.includes(categoryId)) {
+        updateSession(id, { categoryIds: [...managed.categoryIds, categoryId] });
+      }
+    }
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false);
+    setCheckedIds(new Set());
+  }
+
+  function switchView(mode: ViewMode) {
+    setViewMode(mode);
+    setSelectedId(null);
+    if (mode === 'favorites') exitSelectMode();
+  }
+
+  const rowProps = (session: NativeSession) => ({
+    session,
+    managed: store.sessions[session.id] || emptyManaged(),
+    categories: store.categories,
+    selected: selectedId === session.id,
+    selectMode,
+    checked: checkedIds.has(session.id),
+    isCurrent: false,
+    onSelect: (s: NativeSession) => setSelectedId(s.id),
+    onOpen: openNative,
+    onToggleFavorite: toggleFavorite,
+    onTogglePin: togglePin,
+    onToggleCheck: toggleChecked,
+  });
+
+  return (
+    <div className="app-shell" data-theme={theme}>
+      <header className="app-header">
+        <div className="header-brand">
+          <h1>会话书架</h1>
+        </div>
+        <div className="header-search">
+          <SearchIcon size={13} />
+          <input
+            value={filter.search}
+            onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value }))}
+            placeholder="搜索标题、摘要、标签…"
+          />
+          {filter.search && (
+            <button className="search-clear" onClick={() => setFilter((current) => ({ ...current, search: '' }))}>×</button>
+          )}
+        </div>
+        <button
+          className="icon-button"
+          onClick={() => window.parent.postMessage({ type: 'codex-session-shelf:request-sessions' }, '*')}
+          title="刷新会话列表"
+        >
+          <RefreshIcon size={15} />
+        </button>
+      </header>
+
+      <nav className="view-tabs" aria-label="主视图">
+        <div className="segmented">
+          <button className={viewMode === 'favorites' ? 'on' : ''} onClick={() => switchView('favorites')}>
+            我的收藏
+            <b>{favoriteCount}</b>
+          </button>
+          <button className={viewMode === 'all' ? 'on' : ''} onClick={() => switchView('all')}>
+            全部会话
+            <b>{sessions.length}</b>
+          </button>
+        </div>
+        <div className="view-tools">
+          {viewMode === 'all' && (
+            <button
+              className={`select-toggle ${selectMode ? 'on' : ''}`}
+              onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+            >
+              {selectMode ? '退出多选' : '多选'}
+            </button>
+          )}
+          <div className="display-toggle">
+            <button className={displayMode === 'list' ? 'on' : ''} onClick={() => setDisplayMode('list')} title="列表视图">
+              <ListIcon size={14} />
+            </button>
+            <button className={displayMode === 'columns' ? 'on' : ''} onClick={() => setDisplayMode('columns')} title="分栏视图">
+              <ColumnsIcon size={14} />
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      {viewMode === 'favorites' && (
+        <ActivityStrip
+          sessions={sessions}
+          store={store}
+          onOpen={openNative}
+        />
+      )}
+
+      <FilterBar
+        categories={store.categories}
+        availableTags={availableTags}
+        filter={filter}
+        onFilterChange={(patch) => setFilter((current) => ({ ...current, ...patch }))}
+        onClear={() => setFilter((current) => ({ ...current, categoryIds: [], tags: [], lifecycle: null }))}
+        onAddCategory={addCategory}
+        counts={filterCounts}
+      />
+
+      <main className={`app-main ${selected ? 'has-detail' : ''}`}>
+        <div className="session-content" key={viewMode}>
+          {visible.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">⌖</span>
+              <h3>{viewMode === 'favorites' ? '还没有收藏' : '还没有读到会话'}</h3>
+              <p>{viewMode === 'favorites'
+                ? '在全部会话里点星标，把重要的会话收藏到这里'
+                : '打开左侧原生会话列表后点右上角刷新'}</p>
+            </div>
+          ) : displayMode === 'list' ? (
+            viewMode === 'favorites' && !filterActive({ ...filter, search: '' }) ? (
+              <div className="grouped-list">
+                {groupedVisible.groups.map(({ category, sessions: groupSessions }) => (
+                  <section key={category!.id} className="session-group">
+                    <header className="group-header">
+                      <i style={{ background: category!.color }} />
+                      {category!.name}
+                      <b>{groupSessions.length}</b>
+                    </header>
+                    {groupSessions.map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+                  </section>
+                ))}
+                {groupedVisible.ungrouped.length > 0 && (
+                  <section className="session-group">
+                    <header className="group-header muted">
+                      <i />
+                      未分类
+                      <b>{groupedVisible.ungrouped.length}</b>
+                    </header>
+                    {groupedVisible.ungrouped.map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+                  </section>
+                )}
+              </div>
+            ) : (
+              <div className="flat-list">
+                {visible.map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+              </div>
+            )
+          ) : (
+            <div className="column-layout">
+              {store.categories.map((category) => {
+                const columnSessions = visible.filter((s) =>
+                  (store.sessions[s.id] || emptyManaged()).categoryIds.includes(category.id));
+                if (columnSessions.length === 0) return null;
+                return (
+                  <section key={category.id} className="category-column">
+                    <header>
+                      <i style={{ background: category.color }} />
+                      {category.name}
+                      <b>{columnSessions.length}</b>
+                    </header>
+                    {columnSessions.map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+                  </section>
+                );
+              })}
+              {visible.some((s) => (store.sessions[s.id] || emptyManaged()).categoryIds.length === 0) && (
+                <section className="category-column muted">
+                  <header><i />未分类</header>
+                  {visible.filter((s) => (store.sessions[s.id] || emptyManaged()).categoryIds.length === 0)
+                    .map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+                </section>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DetailPanel
+          session={selected}
+          managed={selectedManaged}
+          categories={store.categories}
+          onUpdate={updateSession}
+          onOpen={openNative}
+          onClose={() => setSelectedId(null)}
+        />
+      </main>
+
+      {selectMode && (
+        <BatchBar
+          count={checkedIds.size}
+          categories={store.categories}
+          onBatchFavorite={() => batchUpdate([...checkedIds], { favorite: true })}
+          onBatchUnfavorite={() => batchUpdate([...checkedIds], { favorite: false })}
+          onBatchTag={batchAddTag}
+          onBatchCategory={batchAddCategory}
+          onBatchClearLifecycle={() => batchUpdate([...checkedIds], { lifecycle: null })}
+          onCancel={exitSelectMode}
+        />
+      )}
     </div>
-  </main>;
+  );
 }
 
-createRoot(document.getElementById('root')!).render(<Shelf />);
+createRoot(document.getElementById('root')!).render(<App />);

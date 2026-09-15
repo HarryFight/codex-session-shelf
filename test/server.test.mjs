@@ -26,7 +26,9 @@ test('serves authenticated store APIs and rejects paths outside the instance tok
     body: JSON.stringify({ title: '正式存储', favorite: true }),
   });
   assert.equal(updated.status, 200);
-  assert.equal((await updated.json()).sessions['thread-1'].favorite, true);
+  const updatedStore = await updated.json();
+  assert.equal(updatedStore.sessions['thread-1'].favorite, true);
+  assert.equal(typeof updatedStore.sessions['thread-1'].updatedAt, 'number');
 
   const loaded = await fetch(`${origin}/test-token/api/session-shelf/store`);
   assert.equal(loaded.status, 200);

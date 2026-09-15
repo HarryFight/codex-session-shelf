@@ -36,6 +36,16 @@ function normalizeSession(value = {}) {
   };
 }
 
+function timestampMillis(value) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function timestampIso(value, fallback) {
+  const numeric = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(numeric) ? new Date(numeric).toISOString() : fallback;
+}
+
 export class SessionShelfDatabase {
   constructor(filename, { legacyStorePath } = {}) {
     mkdirSync(path.dirname(filename), { recursive: true });
@@ -148,7 +158,7 @@ export class SessionShelfDatabase {
     }
     const sessions = {};
     for (const row of this.database.prepare(`
-      SELECT id, title, pinned, favorite, lifecycle, summary, next_action, tags FROM sessions ORDER BY updated_at, id
+      SELECT id, title, pinned, favorite, lifecycle, summary, next_action, tags, updated_at FROM sessions ORDER BY updated_at, id
     `).all()) {
       sessions[row.id] = {
         title: row.title || undefined,
@@ -159,6 +169,7 @@ export class SessionShelfDatabase {
         summary: row.summary,
         nextAction: row.next_action,
         tags: JSON.parse(row.tags),
+        updatedAt: timestampMillis(row.updated_at),
       };
     }
     return { revision: this.#revision(), categories, sessions };
@@ -179,7 +190,7 @@ export class SessionShelfDatabase {
       for (const [id, session] of Object.entries(sessions)) {
         const normalized = normalizeSession(session);
         normalized.categoryIds = normalized.categoryIds.filter((categoryId) => categoryIds.has(categoryId));
-        this.#upsertSession(id, normalized, timestamp);
+        this.#upsertSession(id, normalized, timestampIso(session?.updatedAt, timestamp));
       }
       this.#bumpRevision();
       this.database.exec('COMMIT');

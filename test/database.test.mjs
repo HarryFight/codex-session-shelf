@@ -20,8 +20,17 @@ test('imports the legacy JSON store and persists normalized records', () => {
   const store = database.readStore();
   assert.equal(store.revision, 1);
   assert.deepEqual(store.categories, [{ id: 'work', name: '工作', color: '#336699' }]);
-  assert.deepEqual(store.sessions.thread1, {
-    title: '会话一', pinned: true, favorite: true, categoryIds: ['work'], lifecycle: 'active', summary: '摘要', nextAction: '继续', tags: ['重要'],
+  const { updatedAt, ...thread } = store.sessions.thread1;
+  assert.equal(typeof updatedAt, 'number');
+  assert.deepEqual(thread, {
+    title: '会话一',
+    pinned: true,
+    favorite: true,
+    categoryIds: ['work'],
+    lifecycle: 'active',
+    summary: '摘要',
+    nextAction: '继续',
+    tags: ['重要'],
   });
   database.close();
 });
@@ -77,5 +86,19 @@ test('adds the shelf pin column to an existing database without changing favorit
   const record = database.readStore().sessions['thread-1'];
   assert.equal(record.pinned, false);
   assert.equal(record.favorite, true);
+  assert.equal(record.updatedAt, Date.parse('2026-01-01T00:00:00.000Z'));
+  database.close();
+});
+
+test('preserves client update timestamps when replacing the shared store', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'session-shelf-'));
+  const database = new SessionShelfDatabase(path.join(directory, 'shelf.sqlite'));
+  database.replaceStore({
+    categories: [],
+    sessions: {
+      thread1: { favorite: true, updatedAt: Date.parse('2026-02-03T04:05:06.000Z') },
+    },
+  });
+  assert.equal(database.readStore().sessions.thread1.updatedAt, Date.parse('2026-02-03T04:05:06.000Z'));
   database.close();
 });
