@@ -48,10 +48,18 @@ async function ensureService() {
   if (!(await reachable('http://127.0.0.1:' + servicePort + '/health'))) throw new Error('Session Shelf companion did not start');
 }
 async function launchCodex() {
-  if (await reachable(`http://127.0.0.1:${port}/json/version`)) return;
+  const cdpUrl = `http://127.0.0.1:${port}/json/version`;
+  if (await reachable(cdpUrl)) return;
   const app = process.env.CODEX_APP_PATH || '/Applications/ChatGPT.app';
   const profile = path.join(dataDirectory, 'codex-profile');
-  spawn('open', ['-n', '-a', app, '--args', `--user-data-dir=${profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`, `--remote-allow-origins=http://127.0.0.1:${port}`], { stdio: 'ignore', detached: true });
+  const flags = [`--user-data-dir=${profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`, `--remote-allow-origins=http://127.0.0.1:${port}`];
+  spawn('open', ['-n', '-a', app, '--args', ...flags], { stdio: 'ignore', detached: true });
+  for (let i = 0; i < 80 && !(await reachable(cdpUrl)); i++) await delay(250);
+  if (await reachable(cdpUrl)) return;
+  // LaunchServices may coalesce `open -n` into an already-running instance,
+  // leaving no CDP listener behind; start the app binary directly instead.
+  const binary = path.join(app, 'Contents/MacOS', path.basename(app, '.app'));
+  spawn(binary, flags, { stdio: 'ignore', detached: true }).unref();
 }
 async function targets() { try { const response = await fetch(`http://127.0.0.1:${port}/json/list`); return response.json(); } catch { return []; } }
 

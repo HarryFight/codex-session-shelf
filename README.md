@@ -13,6 +13,22 @@ npm run codex
 
 开发模式会构建前端，启动本地 companion 服务，通过 `open -n` 启动一个独立的 Codex 窗口，并在 CDP 端口 `9231` 上持续注入脚本。开发数据保存在 macOS 的 `~/Library/Application Support/Codex Session Shelf/session-shelf.sqlite`。
 
+### 热更新开发
+
+修改 `src/` 后不想重新构建产物时，使用：
+
+```bash
+npm run codex:dev
+```
+
+该命令会启动开发 API（`127.0.0.1:4174`）、Vite dev server（`127.0.0.1:4173`）和注入器，并让 Codex 侧栏书架直接加载 Vite 地址。之后编辑 `src/` 的组件或样式，书架面板通过 Vite HMR 实时更新，无需任何构建或重注入。`Ctrl-C` 会一并退出三个进程。数据仍然保存在系统应用数据目录；需要隔离数据时设置 `CODEX_SESSION_SHELF_DATA_DIR`。
+
+如果已有通过 CDP 启动的 Codex 窗口，且 Vite 与开发 API 已在运行，也可以只注入热更新地址：
+
+```bash
+npm run inject:dev
+```
+
 正式版本将通过 `Codex Session Shelf.app` 启动，不需要终端或 Node 环境。App 会在菜单栏驻留，负责启动/停止 companion、管理受管 Codex 窗口，并提供退出和登录时启动选项。
 
 ## 隔离验证

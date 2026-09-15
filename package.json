@@ -17,7 +17,9 @@
     "app:build:release": "npm run app:prepare && tauri build --bundles app,dmg",
     "start": "node server/index.mjs --port 47824",
     "inject": "npm run build && node scripts/inject.mjs --watch --port 9231 --service-port 47824",
+    "inject:dev": "CODEX_SESSION_SHELF_URL=http://127.0.0.1:4173/?host=codex node scripts/inject.mjs --watch --open",
     "codex": "npm run build && node scripts/inject.mjs --launch --watch --open --port 9231 --service-port 47824",
+    "codex:dev": "node scripts/dev-codex.mjs",
     "test": "node --test",
     "check": "npm run build && npm test"
   },
